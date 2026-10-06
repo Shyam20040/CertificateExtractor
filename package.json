@@ -1,0 +1,24 @@
+{
+  "name": "certificate-information-extractor",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "concurrently -k \"npm run dev --workspace frontend\" \"npm run dev --workspace backend\"",
+    "dev:client": "npm run dev --workspace frontend",
+    "dev:server": "npm run dev --workspace backend",
+    "db:push": "npx supabase db push --include-seed",
+    "build": "npm run build --workspace frontend",
+    "start": "npm run start --workspace backend",
+    "preview": "npm run preview --workspace frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
