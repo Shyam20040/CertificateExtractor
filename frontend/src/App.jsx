@@ -137,7 +137,8 @@ function App() {
     setError("");
     setExtractLoading(true);
     try {
-      const response = await fetch("/api/extract", {
+      const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
+      const response = await fetch(`${apiBaseUrl}/api/extract`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
