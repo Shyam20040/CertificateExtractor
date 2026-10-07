@@ -307,7 +307,7 @@ function App() {
           record.certificationName,
           record.certificateNumber,
           record.issuingOrganization,
-          record.fileUrl ? "Open certificate" : "",
+          record.fileUrl ? "Open certificate" : record.fileUnavailable ? "File unavailable" : "",
         ]),
         styles: { fontSize: 8, cellPadding: 5, overflow: "linebreak" },
         headStyles: { fillColor: [103, 86, 216] },
@@ -329,10 +329,15 @@ function App() {
   }
 
   async function getCertificatesForExport() {
-    return Promise.all(savedCertificates.map(async (record) => ({
-      ...record,
-      fileUrl: record.filePath ? await getCertificateFileUrl(record, false, 604800) : "",
-    })));
+    return Promise.all(savedCertificates.map(async (record) => {
+      if (!record.filePath) return { ...record, fileUrl: "", fileUnavailable: false };
+      try {
+        return { ...record, fileUrl: await getCertificateFileUrl(record, false, 604800), fileUnavailable: false };
+      } catch (fileError) {
+        console.warn(`Could not include a link for ${record.fileName || "a certificate"} in the export:`, fileError);
+        return { ...record, fileUrl: "", fileUnavailable: true };
+      }
+    }));
   }
 
   return (

@@ -9,7 +9,7 @@ export function createCertificatesWorkbook(certificates) {
     record.certificationName,
     record.certificateNumber,
     record.issuingOrganization,
-    record.fileUrl || "",
+    record.fileUrl || (record.fileUnavailable ? "File unavailable" : ""),
   ]);
   const relationships = [];
   const sheetRows = [headers, ...rows].map((row, rowIndex) => {
