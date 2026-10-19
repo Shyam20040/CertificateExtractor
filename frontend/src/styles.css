@@ -661,6 +661,8 @@ body {
 .batch-actions .button-quiet:disabled, .batch-actions .button-primary:disabled { color: #777384; border-color: #e7e3ec; background: rgba(255, 255, 255, .92); }
 .batch-actions .button-primary:not(:disabled) { color: #fff; border-color: #6345e8; background: linear-gradient(135deg, #765be9, #5b3df5); box-shadow: 0 6px 15px rgba(91, 61, 245, .19); }
 .batch-actions .button-primary:not(:disabled):hover { color: #fff; background: linear-gradient(135deg, #6c50df, #5135e4); box-shadow: 0 9px 20px rgba(91, 61, 245, .25); }
+.upload-folder-option { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 12px; color: #777384; font-size: 11px; }
+.upload-folder-option .button { min-height: 38px; padding: 7px 11px; font-size: 11px; }
 
 .workspace-card, .result-section, .library-heading, .certificates-table-wrap, .saved-detail { animation: surface-enter 360ms ease-out both; }
 .hero-copy { animation: surface-enter 420ms ease-out both; }
@@ -686,6 +688,8 @@ body {
   .step-number { width: 28px; height: 28px; }
   .step-line { width: clamp(10px, 4vw, 20px); margin-inline: 4px; }
   .dropzone { min-height: 188px; }
+  .upload-folder-option { flex-wrap: wrap; }
+  .upload-folder-option .button { min-height: 44px; }
   .batch-file { padding: 12px; }
   .batch-file-heading { gap: 8px; }
   .batch-file-heading strong { font-size: 11px; }

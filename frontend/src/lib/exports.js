@@ -5,11 +5,11 @@ const headers = ["S.No.", "Name", "Certification", "No.", "Organization", "Link"
 export function createCertificatesWorkbook(certificates) {
   const rows = certificates.map((record, index) => [
     index + 1,
-    record.name,
-    record.certificationName,
-    record.certificateNumber,
-    record.issuingOrganization,
-    record.fileUrl || (record.fileUnavailable ? "File unavailable" : ""),
+    record.name || "-",
+    record.certificationName || "-",
+    record.certificateNumber || "-",
+    record.issuingOrganization || "-",
+    record.fileUrl || (record.fileUnavailable ? "File unavailable" : "-"),
   ]);
   const relationships = [];
   const sheetRows = [headers, ...rows].map((row, rowIndex) => {

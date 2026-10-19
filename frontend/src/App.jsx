@@ -7,6 +7,8 @@ import {
 } from "lucide-react";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { createWorker } from "tesseract.js";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 import CertificateEditor from "./components/CertificateEditor.jsx";
 import {
   deleteCertificate, getCertificateFileUrl, getCertificates, saveCertificate,
@@ -36,6 +38,7 @@ function App() {
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const inputRef = useRef(null);
+  const folderInputRef = useRef(null);
 
   useEffect(() => {
     let mounted = true;
@@ -262,10 +265,6 @@ function App() {
   async function exportPdf() {
     setExporting(true);
     try {
-      const [{ jsPDF }, { default: autoTable }] = await Promise.all([
-        import("jspdf"),
-        import("jspdf-autotable"),
-      ]);
       const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
       pdf.setFontSize(16);
       pdf.text("My Certificates", 40, 38);
@@ -275,11 +274,11 @@ function App() {
         head: [["S.No.", "Name", "Certification", "No.", "Organization", "Link"]],
         body: exportRecords.map((record, index) => [
           index + 1,
-          record.name,
-          record.certificationName,
-          record.certificateNumber,
-          record.issuingOrganization,
-          record.fileUrl ? "Open certificate" : record.fileUnavailable ? "File unavailable" : "",
+          record.name || "-",
+          record.certificationName || "-",
+          record.certificateNumber || "-",
+          record.issuingOrganization || "-",
+          record.fileUrl ? "Open certificate" : record.fileUnavailable ? "File unavailable" : "-",
         ]),
         styles: { fontSize: 8, cellPadding: 5, overflow: "linebreak" },
         headStyles: { fillColor: [103, 86, 216] },
@@ -355,6 +354,8 @@ function App() {
                 <span className="upload-icon"><UploadCloud size={25} /></span><strong>Drop certificates here</strong><span>or <span className="browse-text">browse files</span> from your device</span><small>JPG, PNG, WEBP or PDF <i /> Up to 10 MB each <i /> {uploads.length}/15 selected</small>
               </button>
               <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => { chooseFiles(event.target.files); event.currentTarget.value = ""; }} />
+              <div className="upload-folder-option"><span>Have your certificates in a folder?</span><button className="button button-quiet" type="button" onClick={() => folderInputRef.current?.click()}><FolderOpen size={15} /> Choose a folder</button></div>
+              <input ref={folderInputRef} className="visually-hidden" type="file" multiple webkitdirectory="" accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => { chooseFiles(event.target.files); event.currentTarget.value = ""; }} />
               {extracting && batchPhase === "analyzing" && <div className="batch-progress"><LoaderCircle className="spin" size={17} /><span>Analyzing {uploads.filter((item) => item.status === "extracting").length} certificates together...</span></div>}
               {!!uploads.length && <div className="batch-file-list">{uploads.map((item) => <div className="batch-file" key={item.key}>
                 <div className="batch-file-heading"><FileSearch2 size={17} /><strong title={item.file.name}>{item.file.name}</strong><span>{(item.file.size / 1024 / 1024).toFixed(2)} MB</span><button className="icon-button" aria-label={`Remove ${item.file.name}`} disabled={extracting || batchSaving} onClick={() => removeUpload(item.key)}><X size={16} /></button></div>
@@ -394,13 +395,13 @@ function App() {
                   <tbody>{filteredCertificates.map((item, index) => (
                     <tr key={item.id}>
                       <td>{index + 1}</td>
-                      <td>{item.name || "â€”"}</td>
-                      <td>{item.certificationName || "â€”"}</td>
-                      <td>{item.certificateNumber || "â€”"}</td>
-                      <td>{item.issuingOrganization || "â€”"}</td>
-                      <td>{item.issueDate || "â€”"}</td>
-                      <td>{item.duration || "â€”"}</td>
-                      <td>{item.fileName ? <span className="table-file-name" title={item.fileName}>{item.fileName}</span> : "â€”"}</td>
+                      <td>{item.name || "-"}</td>
+                      <td>{item.certificationName || "-"}</td>
+                      <td>{item.certificateNumber || "-"}</td>
+                      <td>{item.issuingOrganization || "-"}</td>
+                      <td>{item.issueDate || "-"}</td>
+                      <td>{item.duration || "-"}</td>
+                      <td>{item.fileName ? <span className="table-file-name" title={item.fileName}>{item.fileName}</span> : "-"}</td>
                       <td><div className="table-actions">
                         <button className="icon-button" aria-label={`View ${item.fileName || "certificate"}`} title="View certificate" disabled={!item.filePath} onClick={() => openCertificateFile(item)}><Eye size={16} /></button>
                         <button className="icon-button" aria-label={`Download ${item.fileName || "certificate"}`} title="Download certificate" disabled={!item.filePath} onClick={() => openCertificateFile(item, true)}><Download size={16} /></button>
@@ -439,7 +440,7 @@ function addOrUpdateCertificate(records, saved) {
 }
 
 function fileFingerprint(file) {
-  return `${file.name}:${file.size}:${file.lastModified}`;
+  return `${file.webkitRelativePath || file.name}:${file.size}:${file.lastModified}`;
 }
 
 function downloadBlob(blob, filename) {
