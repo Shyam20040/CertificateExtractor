@@ -411,6 +411,7 @@ body {
 .table-actions .icon-button:hover:not(:disabled) { transform: translateY(-1px); }
 
 .batch-file-list { display: grid; gap: 14px; margin-top: 18px; }
+.batch-progress { display: flex; align-items: center; gap: 10px; margin-top: 18px; padding: 13px 15px; border: 1px solid #e7e5fb; border-radius: 10px; color: #5e54c3; background: linear-gradient(110deg, #f7f6ff, #fbfaff); font-size: 13px; font-weight: 600; }
 .batch-file { min-width: 0; padding: 15px; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
 .batch-file-heading { display: flex; align-items: center; gap: 10px; color: var(--purple); }
 .batch-file-heading strong { min-width: 0; overflow-wrap: anywhere; color: var(--ink); font-size: 13px; }

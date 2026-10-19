@@ -24,6 +24,7 @@ function App() {
   const [page, setPage] = useState("upload");
   const [uploads, setUploads] = useState([]);
   const [extracting, setExtracting] = useState(false);
+  const [batchPhase, setBatchPhase] = useState("idle");
   const [error, setError] = useState("");
   const [batchSaving, setBatchSaving] = useState(false);
   const [savedCertificates, setSavedCertificates] = useState([]);
@@ -91,7 +92,7 @@ function App() {
   async function extractAll() {
     const pending = uploads.filter((item) => item.status === "ready" || item.status === "error");
     if (!pending.length) return;
-    setError(""); setExtracting(true);
+    setError(""); setExtracting(true); setBatchPhase("reading");
     const recognized = [];
     for (const item of pending) {
       try {
@@ -116,6 +117,7 @@ function App() {
       }
     }
     if (recognized.length) {
+      setBatchPhase("analyzing");
       setUploads((current) => current.map((entry) => recognized.some((result) => result.id === entry.key) ? { ...entry, status: "extracting" } : entry));
       try {
         const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
@@ -124,22 +126,31 @@ function App() {
           body: JSON.stringify({ files: recognized.map(({ id, text }) => ({ id, text })) }),
         });
         const body = await response.json().catch(() => null);
-        if (!response.ok || !Array.isArray(body?.results)) throw new Error(body?.error || "The batch extraction service returned an invalid response.");
+        if (!response.ok || !Array.isArray(body?.results)) {
+          const endpointUnavailable = response.status === 404 || response.status === 405;
+          throw new Error(body?.error || (endpointUnavailable
+            ? "Batch extraction is not available on the running server yet. Restart the backend, then select Extract all again."
+            : `Batch extraction failed${response.status ? ` (HTTP ${response.status})` : ""}. Please try again.`));
+        }
         const byId = new Map(body.results.map((result) => [result.id, result.certificate]));
+        const missingFiles = [];
         for (const { id, item } of recognized) {
           const certificate = byId.get(id);
           if (!certificate) {
-            setUploads((current) => current.map((entry) => entry.key === id ? { ...entry, status: "error", error: "Gemini did not return details for this file. Retry Extract all." } : entry));
+            missingFiles.push(item.file.name);
+            setUploads((current) => current.map((entry) => entry.key === id ? { ...entry, status: "error", error: "" } : entry));
             continue;
           }
           setUploads((current) => current.map((entry) => entry.key === id ? { ...entry, status: "review", certificate: { ...initialCertificate(), ...certificate, id: crypto.randomUUID(), fileName: item.file.name }, error: "" } : entry));
         }
+        if (missingFiles.length) setError(`No result came back for ${missingFiles.join(", ")}. Retry Extract all for those files.`);
       } catch (failure) {
         const message = failure instanceof TypeError ? "Could not connect to the batch extraction service. Check that the app and Express server are running." : (failure.message || "Could not extract this batch.");
-        for (const { id } of recognized) setUploads((current) => current.map((entry) => entry.key === id ? { ...entry, status: "error", error: message } : entry));
+        for (const { id } of recognized) setUploads((current) => current.map((entry) => entry.key === id ? { ...entry, status: "error", error: "" } : entry));
+        setError(message);
       }
     }
-    setExtracting(false);
+    setBatchPhase("idle"); setExtracting(false);
   }
 
   async function saveAll() {
@@ -344,11 +355,10 @@ function App() {
                 <span className="upload-icon"><UploadCloud size={25} /></span><strong>Drop certificates here</strong><span>or <span className="browse-text">browse files</span> from your device</span><small>JPG, PNG, WEBP or PDF <i /> Up to 10 MB each <i /> {uploads.length}/15 selected</small>
               </button>
               <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => { chooseFiles(event.target.files); event.currentTarget.value = ""; }} />
+              {extracting && batchPhase === "analyzing" && <div className="batch-progress"><LoaderCircle className="spin" size={17} /><span>Analyzing {uploads.filter((item) => item.status === "extracting").length} certificates together...</span></div>}
               {!!uploads.length && <div className="batch-file-list">{uploads.map((item) => <div className="batch-file" key={item.key}>
                 <div className="batch-file-heading"><FileSearch2 size={17} /><strong title={item.file.name}>{item.file.name}</strong><span>{(item.file.size / 1024 / 1024).toFixed(2)} MB</span><button className="icon-button" aria-label={`Remove ${item.file.name}`} disabled={extracting || batchSaving} onClick={() => removeUpload(item.key)}><X size={16} /></button></div>
                 {item.status === "reading" && <div className="progress-panel"><div className="progress-label"><span><LoaderCircle className="spin" size={16} /> Reading text…</span><strong>{item.progress}%</strong></div><div className="progress-track"><span style={{ width: `${item.progress}%` }} /></div></div>}
-                {item.status === "queued" && <p className="batch-status"><Check size={15} /> Text ready; waiting for the single batch analysis…</p>}
-                {item.status === "extracting" && <p className="batch-status"><LoaderCircle className="spin" size={15} /> Gemini is analyzing all selected files in one request…</p>}
                 {item.error && <p className="batch-error">{item.error}</p>}
                 {item.status === "saved" && <p className="batch-status"><Check size={15} /> Saved and linked to this file</p>}
                 {item.certificate && <div className="batch-result"><div className="result-kicker"><span className="result-icon"><BookOpenCheck size={17} /></span><div><span className="eyebrow">{item.status === "saved" ? "SAVED" : "REVIEW DETAILS"}</span><h2>{item.certificate.certificationName || item.file.name}</h2></div></div><details className="extracted-text"><summary>View extracted text</summary><p>{item.extractedText}</p></details><CertificateEditor certificate={item.certificate} onChange={(value) => setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, certificate: value } : entry))} editing={item.status !== "saved"} setEditing={() => {}} saving={batchSaving} hideEditToggle />{item.status !== "saved" && <p className="privacy-hint">Review the extracted fields. This record will be saved with {item.file.name}.</p>}</div>}
