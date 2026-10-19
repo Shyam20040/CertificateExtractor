@@ -76,7 +76,7 @@ function App() {
       if (selected.size > 10 * 1024 * 1024) { messages.push(`${selected.name}: exceeds the 10 MB limit.`); continue; }
       const fingerprint = fileFingerprint(selected);
       if (existing.has(fingerprint)) { messages.push(`${selected.name}: already added.`); continue; }
-      if (uploads.length + added.length >= 20) { messages.push("You can add up to 20 files."); break; }
+      if (uploads.length + added.length >= 15) { messages.push("You can add up to 15 files."); break; }
       existing.add(fingerprint);
       added.push({ key: crypto.randomUUID(), file: selected, status: "ready", certificate: null, extractedText: "", progress: 0, error: "" });
     }
@@ -92,29 +92,51 @@ function App() {
     const pending = uploads.filter((item) => item.status === "ready" || item.status === "error");
     if (!pending.length) return;
     setError(""); setExtracting(true);
+    const recognized = [];
     for (const item of pending) {
-      setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, status: "reading", error: "", progress: 0 } : entry));
       try {
-        const worker = await createWorker("eng", 1, { logger: (message) => {
-          if (message.status === "recognizing text") setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, progress: Math.round(message.progress * 100) } : entry));
-        } });
-        let text;
-        try {
-          const source = isPdfFile(item.file) ? await renderPdfPage(item.file) : item.file;
-          try { text = (await worker.recognize(source)).data.text.trim(); }
-          finally { if (isPdfFile(item.file)) { source.width = 0; source.height = 0; } }
-        } finally { await worker.terminate(); }
-        if (text.length < 10) throw new Error("Not enough text found. Try a clearer image or PDF.");
-        setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, extractedText: text } : entry));
-        setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, status: "extracting", progress: 100 } : entry));
-        const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
-        const response = await fetch(`${apiBaseUrl}/api/extract`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
-        const body = await response.json().catch(() => null);
-        if (!response.ok || !body?.certificate) throw new Error(body?.error || "Could not extract certificate details. Check that the extraction service is running.");
-        setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, status: "review", certificate: { ...initialCertificate(), ...body.certificate, id: crypto.randomUUID(), fileName: item.file.name }, error: "" } : entry));
+        let text = item.extractedText;
+        if (text.length < 10) {
+          setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, status: "reading", error: "", progress: 0 } : entry));
+          const worker = await createWorker("eng", 1, { logger: (message) => {
+            if (message.status === "recognizing text") setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, progress: Math.round(message.progress * 100) } : entry));
+          } });
+          try {
+            const source = isPdfFile(item.file) ? await renderPdfPage(item.file) : item.file;
+            try { text = (await worker.recognize(source)).data.text.trim(); }
+            finally { if (isPdfFile(item.file)) { source.width = 0; source.height = 0; } }
+          } finally { await worker.terminate(); }
+          if (text.length < 10) throw new Error("Not enough text found. Try a clearer image or PDF.");
+        }
+        recognized.push({ id: item.key, text, item });
+        setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, status: "queued", extractedText: text, progress: 100, error: "" } : entry));
       } catch (failure) {
         const message = failure instanceof TypeError ? "Could not connect to the extraction service. Check that the app and Express server are running." : (failure.message || (isPdfFile(item.file) ? "Could not read this PDF." : "Text recognition failed."));
         setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, status: "error", error: message } : entry));
+      }
+    }
+    if (recognized.length) {
+      setUploads((current) => current.map((entry) => recognized.some((result) => result.id === entry.key) ? { ...entry, status: "extracting" } : entry));
+      try {
+        const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
+        const response = await fetch(`${apiBaseUrl}/api/extract/batch`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ files: recognized.map(({ id, text }) => ({ id, text })) }),
+        });
+        const body = await response.json().catch(() => null);
+        if (!response.ok || !Array.isArray(body?.results)) throw new Error(body?.error || "The batch extraction service returned an invalid response.");
+        const byId = new Map(body.results.map((result) => [result.id, result.certificate]));
+        for (const { id, item } of recognized) {
+          const certificate = byId.get(id);
+          if (!certificate) {
+            setUploads((current) => current.map((entry) => entry.key === id ? { ...entry, status: "error", error: "Gemini did not return details for this file. Retry Extract all." } : entry));
+            continue;
+          }
+          setUploads((current) => current.map((entry) => entry.key === id ? { ...entry, status: "review", certificate: { ...initialCertificate(), ...certificate, id: crypto.randomUUID(), fileName: item.file.name }, error: "" } : entry));
+        }
+      } catch (failure) {
+        const message = failure instanceof TypeError ? "Could not connect to the batch extraction service. Check that the app and Express server are running." : (failure.message || "Could not extract this batch.");
+        for (const { id } of recognized) setUploads((current) => current.map((entry) => entry.key === id ? { ...entry, status: "error", error: message } : entry));
       }
     }
     setExtracting(false);
@@ -317,15 +339,16 @@ function App() {
               <Step number="03" label="Save details" active={uploads.some((item) => item.status === "review")} done={uploads.length > 0 && uploads.every((item) => item.status === "saved")} />
             </div>
             <section className="workspace-card">
-              <div className="section-title"><div className="section-icon"><ImagePlus size={19} /></div><div><h2>Upload your certificates</h2><p>Select up to 20 images or PDFs. Add files now or later.</p></div></div>
+              <div className="section-title"><div className="section-icon"><ImagePlus size={19} /></div><div><h2>Upload your certificates</h2><p>Select up to 15 images or PDFs. OCR runs on your device, then Gemini analyzes the batch in one request.</p></div></div>
               <button className="dropzone" onClick={() => inputRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); chooseFiles(event.dataTransfer.files); }}>
-                <span className="upload-icon"><UploadCloud size={25} /></span><strong>Drop certificates here</strong><span>or <span className="browse-text">browse files</span> from your device</span><small>JPG, PNG, WEBP or PDF <i /> Up to 10 MB each <i /> {uploads.length}/20 selected</small>
+                <span className="upload-icon"><UploadCloud size={25} /></span><strong>Drop certificates here</strong><span>or <span className="browse-text">browse files</span> from your device</span><small>JPG, PNG, WEBP or PDF <i /> Up to 10 MB each <i /> {uploads.length}/15 selected</small>
               </button>
               <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => { chooseFiles(event.target.files); event.currentTarget.value = ""; }} />
               {!!uploads.length && <div className="batch-file-list">{uploads.map((item) => <div className="batch-file" key={item.key}>
                 <div className="batch-file-heading"><FileSearch2 size={17} /><strong title={item.file.name}>{item.file.name}</strong><span>{(item.file.size / 1024 / 1024).toFixed(2)} MB</span><button className="icon-button" aria-label={`Remove ${item.file.name}`} disabled={extracting || batchSaving} onClick={() => removeUpload(item.key)}><X size={16} /></button></div>
                 {item.status === "reading" && <div className="progress-panel"><div className="progress-label"><span><LoaderCircle className="spin" size={16} /> Reading text…</span><strong>{item.progress}%</strong></div><div className="progress-track"><span style={{ width: `${item.progress}%` }} /></div></div>}
-                {item.status === "extracting" && <p className="batch-status"><LoaderCircle className="spin" size={15} /> Extracting structured details…</p>}
+                {item.status === "queued" && <p className="batch-status"><Check size={15} /> Text ready; waiting for the single batch analysis…</p>}
+                {item.status === "extracting" && <p className="batch-status"><LoaderCircle className="spin" size={15} /> Gemini is analyzing all selected files in one request…</p>}
                 {item.error && <p className="batch-error">{item.error}</p>}
                 {item.status === "saved" && <p className="batch-status"><Check size={15} /> Saved and linked to this file</p>}
                 {item.certificate && <div className="batch-result"><div className="result-kicker"><span className="result-icon"><BookOpenCheck size={17} /></span><div><span className="eyebrow">{item.status === "saved" ? "SAVED" : "REVIEW DETAILS"}</span><h2>{item.certificate.certificationName || item.file.name}</h2></div></div><details className="extracted-text"><summary>View extracted text</summary><p>{item.extractedText}</p></details><CertificateEditor certificate={item.certificate} onChange={(value) => setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, certificate: value } : entry))} editing={item.status !== "saved"} setEditing={() => {}} saving={batchSaving} hideEditToggle />{item.status !== "saved" && <p className="privacy-hint">Review the extracted fields. This record will be saved with {item.file.name}.</p>}</div>}
