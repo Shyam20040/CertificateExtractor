@@ -22,15 +22,12 @@ const initialCertificate = () => ({
 
 function App() {
   const [page, setPage] = useState("upload");
-  const [file, setFile] = useState(null);
-  const [imageUrl, setImageUrl] = useState("");
-  const [ocrProgress, setOcrProgress] = useState(0);
-  const [ocrLoading, setOcrLoading] = useState(false);
-  const [extractLoading, setExtractLoading] = useState(false);
+  const [uploads, setUploads] = useState([]);
+  const [extracting, setExtracting] = useState(false);
   const [error, setError] = useState("");
-  const [certificate, setCertificate] = useState(null);
-  const [editing, setEditing] = useState(false);
+  const [batchSaving, setBatchSaving] = useState(false);
   const [savedCertificates, setSavedCertificates] = useState([]);
+  const [editing, setEditing] = useState(false);
   const [search, setSearch] = useState("");
   const [activeCertificate, setActiveCertificate] = useState(null);
   const [toast, setToast] = useState("");
@@ -38,10 +35,6 @@ function App() {
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const inputRef = useRef(null);
-
-  useEffect(() => () => {
-    if (imageUrl) URL.revokeObjectURL(imageUrl);
-  }, [imageUrl]);
 
   useEffect(() => {
     let mounted = true;
@@ -66,142 +59,88 @@ function App() {
     window.setTimeout(() => setToast(""), 2800);
   }
 
-  function chooseFile(selected) {
+  function chooseFiles(selectedFiles) {
     setError("");
-    if (!selected) return;
-    const extension = selected.name.split(".").pop()?.toLowerCase();
-    const acceptedExtensions = ["jpg", "jpeg", "png", "webp", "pdf"];
-    if (!acceptedTypes.includes(selected.type) && !acceptedExtensions.includes(extension)) {
-      setError("Please choose a JPG, PNG, WEBP, or PDF certificate.");
-      return;
+    const picked = Array.from(selectedFiles || []);
+    if (!picked.length) return;
+    const added = [];
+    const messages = [];
+    const existing = new Set(uploads.map((item) => fileFingerprint(item.file)));
+    for (const selected of picked) {
+      const extension = selected.name.split(".").pop()?.toLowerCase();
+      const acceptedExtensions = ["jpg", "jpeg", "png", "webp", "pdf"];
+      if (!acceptedTypes.includes(selected.type) && !acceptedExtensions.includes(extension)) {
+        messages.push(`${selected.name}: choose a JPG, PNG, WEBP, or PDF file.`); continue;
+      }
+      if (!selected.size) { messages.push(`${selected.name}: the file is empty.`); continue; }
+      if (selected.size > 10 * 1024 * 1024) { messages.push(`${selected.name}: exceeds the 10 MB limit.`); continue; }
+      const fingerprint = fileFingerprint(selected);
+      if (existing.has(fingerprint)) { messages.push(`${selected.name}: already added.`); continue; }
+      if (uploads.length + added.length >= 20) { messages.push("You can add up to 20 files."); break; }
+      existing.add(fingerprint);
+      added.push({ key: crypto.randomUUID(), file: selected, status: "ready", certificate: null, extractedText: "", progress: 0, error: "" });
     }
-    if (!selected.size) {
-      setError("This file is empty. Please choose another file.");
-      return;
-    }
-    if (selected.size > 10 * 1024 * 1024) {
-      setError("This file is larger than 10 MB. Choose a smaller file to continue.");
-      return;
-    }
-    setFile(selected);
-    setImageUrl(isPdfFile(selected) ? "" : URL.createObjectURL(selected));
-    setCertificate(null);
-    setEditing(false);
+    if (added.length) setUploads((current) => [...current, ...added]);
+    if (messages.length) setError(messages.join(" "));
   }
 
-  async function runOcr() {
-    if (!file) {
-      setError("Upload a certificate image or PDF first.");
-      return;
-    }
-    setError("");
-    setOcrLoading(true);
-    setOcrProgress(0);
-    try {
-      const worker = await createWorker("eng", 1, {
-        logger: (message) => {
-          if (message.status === "recognizing text") setOcrProgress(Math.round(message.progress * 100));
-        },
-      });
+  function removeUpload(key) {
+    setUploads((current) => current.filter((item) => item.key !== key));
+  }
+
+  async function extractAll() {
+    const pending = uploads.filter((item) => item.status === "ready" || item.status === "error");
+    if (!pending.length) return;
+    setError(""); setExtracting(true);
+    for (const item of pending) {
+      setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, status: "reading", error: "", progress: 0 } : entry));
       try {
-        const source = isPdfFile(file) ? await renderPdfPage(file) : file;
-        let result;
+        const worker = await createWorker("eng", 1, { logger: (message) => {
+          if (message.status === "recognizing text") setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, progress: Math.round(message.progress * 100) } : entry));
+        } });
+        let text;
         try {
-          result = await worker.recognize(source);
-        } finally {
-          if (isPdfFile(file)) {
-            source.width = 0;
-            source.height = 0;
-          }
-        }
-        const text = result.data.text.trim();
-        if (text.length < 10) {
-          setError("Not enough text was found. Try a clearer image or PDF with better lighting.");
-          return;
-        }
-        await extractInformation(text);
-      } finally {
-        await worker.terminate();
+          const source = isPdfFile(item.file) ? await renderPdfPage(item.file) : item.file;
+          try { text = (await worker.recognize(source)).data.text.trim(); }
+          finally { if (isPdfFile(item.file)) { source.width = 0; source.height = 0; } }
+        } finally { await worker.terminate(); }
+        if (text.length < 10) throw new Error("Not enough text found. Try a clearer image or PDF.");
+        setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, extractedText: text } : entry));
+        setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, status: "extracting", progress: 100 } : entry));
+        const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
+        const response = await fetch(`${apiBaseUrl}/api/extract`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+        const body = await response.json().catch(() => null);
+        if (!response.ok || !body?.certificate) throw new Error(body?.error || "Could not extract certificate details. Check that the extraction service is running.");
+        setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, status: "review", certificate: { ...initialCertificate(), ...body.certificate, id: crypto.randomUUID(), fileName: item.file.name }, error: "" } : entry));
+      } catch (failure) {
+        const message = failure instanceof TypeError ? "Could not connect to the extraction service. Check that the app and Express server are running." : (failure.message || (isPdfFile(item.file) ? "Could not read this PDF." : "Text recognition failed."));
+        setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, status: "error", error: message } : entry));
       }
-    } catch (ocrError) {
-      console.error("OCR failed:", ocrError);
-      setError(isPdfFile(file)
-        ? "Could not read this PDF. Make sure it is not password-protected, then try again."
-        : "Text recognition failed. Please try another image.");
-    } finally {
-      setOcrLoading(false);
     }
+    setExtracting(false);
   }
 
-  async function extractInformation(text) {
-    setError("");
-    setExtractLoading(true);
-    try {
-      const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
-      const response = await fetch(`${apiBaseUrl}/api/extract`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      const responseText = await response.text();
-      let result;
+  async function saveAll() {
+    const pending = uploads.filter((item) => item.certificate && item.status !== "saved");
+    if (!pending.length) return;
+    const invalid = pending.filter((item) => !item.certificate.certificationName.trim() && !item.certificate.name.trim());
+    if (invalid.length) { setError(`Add a recipient or certification name for: ${invalid.map((item) => item.file.name).join(", ")}.`); return; }
+    setError(""); setBatchSaving(true);
+    const failures = [];
+    for (const item of pending) {
+      setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, status: "saving", error: "" } : entry));
       try {
-        result = responseText ? JSON.parse(responseText) : null;
-      } catch {
-        throw new Error(
-          response.ok
-            ? "The extraction service returned an unreadable response. Please try again."
-            : "The extraction service is unavailable. Make sure the Express server is running, then try again.",
-        );
+        const saved = await saveCertificate({ ...item.certificate, fileName: item.file.name }, item.certificate.filePath ? null : item.file);
+        setSavedCertificates((records) => addOrUpdateCertificate(records, saved));
+        setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, status: "saved", certificate: saved } : entry));
+      } catch (failure) {
+        failures.push(`${item.file.name}: ${failure.message || "Save failed."}`);
+        setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, status: "review", error: failure.message || "Save failed." } : entry));
       }
-      if (!result || typeof result !== "object") {
-        throw new Error("The extraction service returned an empty response. Make sure the Express server is running, then try again.");
-      }
-      if (!response.ok) throw new Error(result.error || "Could not extract certificate details.");
-      if (!result.certificate || typeof result.certificate !== "object") {
-        throw new Error("The extraction service response did not include certificate details. Please try again.");
-      }
-      setCertificate({ ...initialCertificate(), ...result.certificate });
-      setEditing(false);
-    } catch (extractError) {
-      setError(extractError instanceof TypeError
-        ? "Could not connect to the extraction service. Make sure both the React app and Express server are running."
-        : extractError.message || "Could not connect to the extraction service.");
-    } finally {
-      setExtractLoading(false);
     }
-  }
-
-  async function saveCurrentCertificate(value = certificate) {
-    if (!value) return;
-    if (!value.certificationName.trim() && !value.name.trim()) {
-      setError("Add a recipient or certification name before saving.");
-      return;
-    }
-    setSaving(true);
-    try {
-      const saved = await saveCertificate({
-        ...value,
-        filePath: value.filePath || "",
-        fileName: value.fileName || file?.name || "",
-        sourceImageName: value.sourceImageName || file?.name || "",
-        id: value.id,
-        createdAt: value.createdAt,
-      }, file);
-      setCertificate(saved);
-      setActiveCertificate(saved);
-      setSavedCertificates((records) => addOrUpdateCertificate(records, saved));
-      setFile(null);
-      setImageUrl("");
-      setEditing(false);
-      setError("");
-      notify(saved.cleanupWarning || "Certificate saved to your library");
-    } catch (saveError) {
-      console.error("Could not save certificate:", saveError);
-      setError(saveError.message || "Could not save this certificate.");
-    } finally {
-      setSaving(false);
-    }
+    setBatchSaving(false);
+    if (failures.length) setError(`Some files could not be saved. Retry Save all to continue. ${failures.join(" ")}`);
+    else notify(`${pending.length} certificate${pending.length === 1 ? "" : "s"} saved to your library`);
   }
 
   function openSaved(item, startEditing = false) {
@@ -361,57 +300,39 @@ function App() {
               <div className="hero-copy">
                 <span className="eyebrow"><Sparkles size={14} /> YOUR CREDENTIALS, ORGANIZED</span>
                 <h1>Every achievement,<br /><span>beautifully captured.</span></h1>
-                <p>Turn a certificate image or PDF into a polished, searchable record in just a few clicks.</p>
+                <p>Turn certificate images or PDFs into polished, searchable records in just a few clicks.</p>
               </div>
               <div className="hero-art" aria-hidden="true">
                 <div className="hero-orbit orbit-one" /><div className="hero-orbit orbit-two" />
                 <div className="hero-certificate"><span className="mini-seal"><Award size={28} /></span><span className="mini-line wide" /><span className="mini-line" /><span className="mini-line short" /><span className="mini-sign" /></div>
-                <span className="sparkle sparkle-one">✳</span><span className="sparkle sparkle-two">✦</span>
+                <span className="sparkle sparkle-one">âœ³</span><span className="sparkle sparkle-two">âœ¦</span>
               </div>
             </section>
 
             <div className="steps">
-              <Step number="01" label="Upload" active={!ocrLoading && !extractLoading && !certificate} done={ocrLoading || extractLoading || !!certificate} />
+              <Step number="01" label="Upload" active={!uploads.some((item) => item.certificate)} done={uploads.length > 0} />
               <span className="step-line" />
-              <Step number="02" label="Extract details" active={ocrLoading || extractLoading} done={!!certificate} />
+              <Step number="02" label="Extract details" active={extracting} done={uploads.some((item) => item.certificate)} />
               <span className="step-line" />
-              <Step number="03" label="Save details" active={!!certificate} done={false} />
+              <Step number="03" label="Save details" active={uploads.some((item) => item.status === "review")} done={uploads.length > 0 && uploads.every((item) => item.status === "saved")} />
             </div>
-
             <section className="workspace-card">
-              <div className="section-title">
-                <div className="section-icon"><ImagePlus size={19} /></div>
-                <div><h2>Upload your certificate</h2><p>Start with a clear image, scan, or PDF.</p></div>
-              </div>
-              {!file ? (
-                <button className="dropzone" onClick={() => inputRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); chooseFile(event.dataTransfer.files[0]); }}>
-                  <span className="upload-icon"><UploadCloud size={25} /></span>
-                  <strong>Drop your certificate here</strong>
-                  <span>or <span className="browse-text">browse files</span> from your device</span>
-                  <small>JPG, PNG, WEBP or PDF <i /> Up to 10 MB</small>
-                </button>
-              ) : (
-                <div className="uploaded-file">
-                  <div className="preview-wrap">{isPdfFile(file) ? <FileSearch2 size={26} aria-label="PDF certificate" /> : <img src={imageUrl} alt="Uploaded certificate preview" />}</div>
-                  <div className="uploaded-info"><strong>{file.name}</strong><span>{(file.size / 1024 / 1024).toFixed(2)} MB · Ready to read</span><button className="text-button" onClick={() => { setFile(null); setImageUrl(""); setCertificate(null); }}>Remove file</button></div>
-                  {!ocrLoading && !extractLoading && !certificate && <button className="button button-primary" onClick={runOcr}><FileSearch2 size={16} /> Read certificate</button>}
-                </div>
-              )}
-              <input ref={inputRef} className="visually-hidden" type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => { chooseFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-
-              {ocrLoading && <div className="progress-panel"><div className="progress-label"><span><LoaderCircle className="spin" size={17} /> Reading certificate text…</span><strong>{ocrProgress}%</strong></div><div className="progress-track"><span style={{ width: `${ocrProgress}%` }} /></div><p>Text recognition runs privately in your browser. Only the extracted text is sent to Gemini.</p></div>}
+              <div className="section-title"><div className="section-icon"><ImagePlus size={19} /></div><div><h2>Upload your certificates</h2><p>Select up to 20 images or PDFs. Add files now or later.</p></div></div>
+              <button className="dropzone" onClick={() => inputRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); chooseFiles(event.dataTransfer.files); }}>
+                <span className="upload-icon"><UploadCloud size={25} /></span><strong>Drop certificates here</strong><span>or <span className="browse-text">browse files</span> from your device</span><small>JPG, PNG, WEBP or PDF <i /> Up to 10 MB each <i /> {uploads.length}/20 selected</small>
+              </button>
+              <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => { chooseFiles(event.target.files); event.currentTarget.value = ""; }} />
+              {!!uploads.length && <div className="batch-file-list">{uploads.map((item) => <div className="batch-file" key={item.key}>
+                <div className="batch-file-heading"><FileSearch2 size={17} /><strong title={item.file.name}>{item.file.name}</strong><span>{(item.file.size / 1024 / 1024).toFixed(2)} MB</span><button className="icon-button" aria-label={`Remove ${item.file.name}`} disabled={extracting || batchSaving} onClick={() => removeUpload(item.key)}><X size={16} /></button></div>
+                {item.status === "reading" && <div className="progress-panel"><div className="progress-label"><span><LoaderCircle className="spin" size={16} /> Reading text…</span><strong>{item.progress}%</strong></div><div className="progress-track"><span style={{ width: `${item.progress}%` }} /></div></div>}
+                {item.status === "extracting" && <p className="batch-status"><LoaderCircle className="spin" size={15} /> Extracting structured details…</p>}
+                {item.error && <p className="batch-error">{item.error}</p>}
+                {item.status === "saved" && <p className="batch-status"><Check size={15} /> Saved and linked to this file</p>}
+                {item.certificate && <div className="batch-result"><div className="result-kicker"><span className="result-icon"><BookOpenCheck size={17} /></span><div><span className="eyebrow">{item.status === "saved" ? "SAVED" : "REVIEW DETAILS"}</span><h2>{item.certificate.certificationName || item.file.name}</h2></div></div><details className="extracted-text"><summary>View extracted text</summary><p>{item.extractedText}</p></details><CertificateEditor certificate={item.certificate} onChange={(value) => setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, certificate: value } : entry))} editing={item.status !== "saved"} setEditing={() => {}} saving={batchSaving} hideEditToggle />{item.status !== "saved" && <p className="privacy-hint">Review the extracted fields. This record will be saved with {item.file.name}.</p>}</div>}
+              </div>)}</div>}
+              <div className="batch-actions"><button className="button button-quiet" onClick={extractAll} disabled={extracting || batchSaving || !uploads.some((item) => item.status === "ready" || item.status === "error")}><FileSearch2 size={16} /> {extracting ? "Extracting…" : "Extract all"}</button><button className="button button-primary" onClick={saveAll} disabled={batchSaving || extracting || !uploads.some((item) => item.certificate && item.status !== "saved")}><Check size={16} /> {batchSaving ? "Saving…" : "Save all"}</button></div>
             </section>
-
-            {error && <ErrorMessage message={error} onClose={() => setError("")} />}
-            {extractLoading && <div className="ai-loading"><span className="ai-loading-icon"><Sparkles size={20} /></span><div><strong>Finding the important details</strong><p>Gemini is organizing the certificate text into a neat profile.</p></div><LoaderCircle className="spin loading-trailing" size={19} /></div>}
-            {certificate && !extractLoading && (
-              <div className="result-section">
-                <div className="result-kicker"><span className="result-icon"><BookOpenCheck size={18} /></span><div><span className="eyebrow">STEP 03 · READY TO REVIEW</span><h2>Your certificate details</h2></div></div>
-                <CertificateEditor certificate={certificate} onChange={setCertificate} editing={editing} setEditing={setEditing} onSave={() => saveCurrentCertificate()} savingLabel="Save certificate" saveAlways saving={saving} />
-                {!editing && <p className="privacy-hint"><ShieldCheck size={15} /> Your certificate is saved to the shared Supabase library when you choose Save certificate.</p>}
-              </div>
-            )}
-          </>
+            {error && <ErrorMessage message={error} onClose={() => setError("")} />}          </>
         ) : (
           <section className="library-page">
             <div className="library-heading">
@@ -424,7 +345,7 @@ function App() {
             </div>
             {error && <ErrorMessage message={error} onClose={() => setError("")} />}
             {savedCertificates.length > 0 && (
-              <label className="search-box"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by name, certificate, or organization…" /></label>
+              <label className="search-box"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by name, certificate, or organizationâ€¦" /></label>
             )}
             {activeCertificate ? (
               <div className="saved-detail">
@@ -440,13 +361,13 @@ function App() {
                   <tbody>{filteredCertificates.map((item, index) => (
                     <tr key={item.id}>
                       <td>{index + 1}</td>
-                      <td>{item.name || "—"}</td>
-                      <td>{item.certificationName || "—"}</td>
-                      <td>{item.certificateNumber || "—"}</td>
-                      <td>{item.issuingOrganization || "—"}</td>
-                      <td>{item.issueDate || "—"}</td>
-                      <td>{item.duration || "—"}</td>
-                      <td>{item.fileName ? <span className="table-file-name" title={item.fileName}>{item.fileName}</span> : "—"}</td>
+                      <td>{item.name || "â€”"}</td>
+                      <td>{item.certificationName || "â€”"}</td>
+                      <td>{item.certificateNumber || "â€”"}</td>
+                      <td>{item.issuingOrganization || "â€”"}</td>
+                      <td>{item.issueDate || "â€”"}</td>
+                      <td>{item.duration || "â€”"}</td>
+                      <td>{item.fileName ? <span className="table-file-name" title={item.fileName}>{item.fileName}</span> : "â€”"}</td>
                       <td><div className="table-actions">
                         <button className="icon-button" aria-label={`View ${item.fileName || "certificate"}`} title="View certificate" disabled={!item.filePath} onClick={() => openCertificateFile(item)}><Eye size={16} /></button>
                         <button className="icon-button" aria-label={`Download ${item.fileName || "certificate"}`} title="Download certificate" disabled={!item.filePath} onClick={() => openCertificateFile(item, true)}><Download size={16} /></button>
@@ -460,7 +381,7 @@ function App() {
             ) : savedCertificates.length ? (
               <div className="empty-state compact"><span className="empty-icon"><Search size={24} /></span><h2>No matches found</h2><p>Try a different name, certificate, or organization.</p><button className="text-button" onClick={() => setSearch("")}>Clear search</button></div>
             ) : libraryLoading ? (
-              <div className="empty-state"><LoaderCircle className="spin" size={24} /><p>Loading your certificates…</p></div>
+              <div className="empty-state"><LoaderCircle className="spin" size={24} /><p>Loading your certificatesâ€¦</p></div>
             ) : (
               <div className="empty-state"><span className="empty-icon"><Award size={27} /></span><span className="eyebrow">A LITTLE SPACE FOR BIG THINGS</span><h2>Your achievements will live here.</h2><p>Save your first certificate and it will be ready whenever you need it.</p><button className="button button-primary" onClick={() => setPage("upload")}><FilePlus2 size={16} /> Add your first certificate</button></div>
             )}
@@ -482,6 +403,10 @@ function addOrUpdateCertificate(records, saved) {
   const existingIndex = records.findIndex((record) => record.id === saved.id);
   if (existingIndex < 0) return [saved, ...records];
   return records.map((record) => record.id === saved.id ? saved : record);
+}
+
+function fileFingerprint(file) {
+  return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
 function downloadBlob(blob, filename) {

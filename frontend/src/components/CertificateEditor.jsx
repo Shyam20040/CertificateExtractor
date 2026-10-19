@@ -12,7 +12,7 @@ const fields = [
   ["credentialUrl", "Credential URL", "https://"],
 ];
 
-export default function CertificateEditor({ certificate, onChange, editing, setEditing, onSave, savingLabel, saveAlways = false, saving = false }) {
+export default function CertificateEditor({ certificate, onChange, editing, setEditing, onSave, savingLabel, saveAlways = false, saving = false, hideEditToggle = false }) {
   const [skillInput, setSkillInput] = useState("");
   const originalCertificate = useRef(certificate);
 
@@ -47,9 +47,9 @@ export default function CertificateEditor({ certificate, onChange, editing, setE
           <h2>{certificate.certificationName || "Your certificate details"}</h2>
           <p>Review the information below and make any corrections.</p>
         </div>
-        <button className="button button-quiet" onClick={toggleEditing}>
+        {!hideEditToggle && <button className="button button-quiet" onClick={toggleEditing}>
           {editing ? <><X size={16} /> Cancel edit</> : "Edit details"}
-        </button>
+        </button>}
       </div>
 
       <div className="field-grid">
