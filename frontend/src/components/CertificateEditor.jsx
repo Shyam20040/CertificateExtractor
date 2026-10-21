@@ -12,7 +12,7 @@ const fields = [
   ["credentialUrl", "Credential URL", "https://"],
 ];
 
-export default function CertificateEditor({ certificate, onChange, editing, setEditing, onSave, savingLabel, saveAlways = false, saving = false, hideEditToggle = false }) {
+export default function CertificateEditor({ certificate, onChange, editing, setEditing, onSave, onCancel, savingLabel, saveAlways = false, saving = false, actionsDisabled = false, hideEditToggle = false }) {
   const [skillInput, setSkillInput] = useState("");
   const originalCertificate = useRef(certificate);
 
@@ -88,8 +88,8 @@ export default function CertificateEditor({ certificate, onChange, editing, setE
 
       {(editing || saveAlways) && (
         <div className="editor-actions">
-          {editing && <button className="button button-quiet" onClick={toggleEditing}>Cancel</button>}
-          <button className="button button-primary" onClick={onSave} disabled={saving}>{saving ? <><LoaderCircle className="spin" size={16} /> Saving…</> : <><Check size={16} /> {savingLabel}</>}</button>
+          {editing && <button className="button button-quiet" onClick={onCancel || toggleEditing} disabled={saving || actionsDisabled}>Cancel</button>}
+          <button className="button button-primary" onClick={onSave} disabled={saving || actionsDisabled}>{saving ? <><LoaderCircle className="spin" size={16} /> Saving…</> : <><Check size={16} /> {savingLabel}</>}</button>
         </div>
       )}
     </section>

@@ -29,6 +29,7 @@ function App() {
   const [batchPhase, setBatchPhase] = useState("idle");
   const [error, setError] = useState("");
   const [batchSaving, setBatchSaving] = useState(false);
+  const [savingUploadKey, setSavingUploadKey] = useState("");
   const [savedCertificates, setSavedCertificates] = useState([]);
   const [editing, setEditing] = useState(false);
   const [search, setSearch] = useState("");
@@ -90,6 +91,30 @@ function App() {
 
   function removeUpload(key) {
     setUploads((current) => current.filter((item) => item.key !== key));
+  }
+
+  async function saveOneUpload(key) {
+    const item = uploads.find((entry) => entry.key === key);
+    if (!item?.certificate || savingUploadKey || batchSaving) return;
+    if (!item.certificate.certificationName.trim() && !item.certificate.name.trim()) {
+      setUploads((current) => current.map((entry) => entry.key === key ? { ...entry, error: "Add a recipient or certification name before saving." } : entry));
+      return;
+    }
+    setSavingUploadKey(key);
+    setUploads((current) => current.map((entry) => entry.key === key ? { ...entry, status: "saving", error: "" } : entry));
+    try {
+      const saved = await saveCertificate(
+        { ...item.certificate, fileName: item.file.name },
+        item.certificate.filePath ? null : item.file,
+      );
+      setSavedCertificates((records) => addOrUpdateCertificate(records, saved));
+      setUploads((current) => current.filter((entry) => entry.key !== key));
+      notify(saved.cleanupWarning || `${saved.certificationName || "Certificate"} saved to your library`);
+    } catch (saveError) {
+      setUploads((current) => current.map((entry) => entry.key === key ? { ...entry, status: "review", error: saveError.message || "Could not save this certificate." } : entry));
+    } finally {
+      setSavingUploadKey("");
+    }
   }
 
   async function extractAll() {
@@ -157,6 +182,7 @@ function App() {
   }
 
   async function saveAll() {
+    if (savingUploadKey) return;
     const pending = uploads.filter((item) => item.certificate && item.status !== "saved");
     if (!pending.length) return;
     const invalid = pending.filter((item) => !item.certificate.certificationName.trim() && !item.certificate.name.trim());
@@ -358,13 +384,13 @@ function App() {
               <input ref={folderInputRef} className="visually-hidden" type="file" multiple webkitdirectory="" accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => { chooseFiles(event.target.files); event.currentTarget.value = ""; }} />
               {extracting && batchPhase === "analyzing" && <div className="batch-progress"><LoaderCircle className="spin" size={17} /><span>Analyzing {uploads.filter((item) => item.status === "extracting").length} certificates together...</span></div>}
               {!!uploads.length && <div className="batch-file-list">{uploads.map((item) => <div className="batch-file" key={item.key}>
-                <div className="batch-file-heading"><FileSearch2 size={17} /><strong title={item.file.name}>{item.file.name}</strong><span>{(item.file.size / 1024 / 1024).toFixed(2)} MB</span><button className="icon-button" aria-label={`Remove ${item.file.name}`} disabled={extracting || batchSaving} onClick={() => removeUpload(item.key)}><X size={16} /></button></div>
+                <div className="batch-file-heading"><FileSearch2 size={17} /><strong title={item.file.name}>{item.file.name}</strong><span>{(item.file.size / 1024 / 1024).toFixed(2)} MB</span><button className="icon-button" aria-label={`Remove ${item.file.name}`} disabled={extracting || batchSaving || savingUploadKey === item.key} onClick={() => removeUpload(item.key)}><X size={16} /></button></div>
                 {item.status === "reading" && <div className="progress-panel"><div className="progress-label"><span><LoaderCircle className="spin" size={16} /> Reading text…</span><strong>{item.progress}%</strong></div><div className="progress-track"><span style={{ width: `${item.progress}%` }} /></div></div>}
                 {item.error && <p className="batch-error">{item.error}</p>}
                 {item.status === "saved" && <p className="batch-status"><Check size={15} /> Saved and linked to this file</p>}
-                {item.certificate && <div className="batch-result"><div className="result-kicker"><span className="result-icon"><BookOpenCheck size={17} /></span><div><span className="eyebrow">{item.status === "saved" ? "SAVED" : "REVIEW DETAILS"}</span><h2>{item.certificate.certificationName || item.file.name}</h2></div></div><details className="extracted-text"><summary>View extracted text</summary><p>{item.extractedText}</p></details><CertificateEditor certificate={item.certificate} onChange={(value) => setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, certificate: value } : entry))} editing={item.status !== "saved"} setEditing={() => {}} saving={batchSaving} hideEditToggle />{item.status !== "saved" && <p className="privacy-hint">Review the extracted fields. This record will be saved with {item.file.name}.</p>}</div>}
+                {item.certificate && <div className="batch-result"><div className="result-kicker"><span className="result-icon"><BookOpenCheck size={17} /></span><div><span className="eyebrow">{item.status === "saved" ? "SAVED" : "REVIEW DETAILS"}</span><h2>{item.certificate.certificationName || item.file.name}</h2></div></div><details className="extracted-text"><summary>View extracted text</summary><p>{item.extractedText}</p></details><CertificateEditor certificate={item.certificate} onChange={(value) => setUploads((current) => current.map((entry) => entry.key === item.key ? { ...entry, certificate: value } : entry))} editing={item.status !== "saved"} setEditing={() => {}} onCancel={() => removeUpload(item.key)} onSave={() => saveOneUpload(item.key)} savingLabel="Save certificate" saving={batchSaving || savingUploadKey === item.key} actionsDisabled={batchSaving || Boolean(savingUploadKey)} hideEditToggle />{item.status !== "saved" && <p className="privacy-hint">Review the extracted fields. This record will be saved with {item.file.name}.</p>}</div>}
               </div>)}</div>}
-              <div className="batch-actions"><button className="button button-quiet" onClick={extractAll} disabled={extracting || batchSaving || !uploads.some((item) => item.status === "ready" || item.status === "error")}><FileSearch2 size={16} /> {extracting ? "Extracting…" : "Extract all"}</button><button className="button button-primary" onClick={saveAll} disabled={batchSaving || extracting || !uploads.some((item) => item.certificate && item.status !== "saved")}><Check size={16} /> {batchSaving ? "Saving…" : "Save all"}</button></div>
+              <div className="batch-actions"><button className="button button-quiet" onClick={extractAll} disabled={extracting || batchSaving || Boolean(savingUploadKey) || !uploads.some((item) => item.status === "ready" || item.status === "error")}><FileSearch2 size={16} /> {extracting ? "Extracting…" : "Extract all"}</button><button className="button button-primary" onClick={saveAll} disabled={batchSaving || extracting || Boolean(savingUploadKey) || !uploads.some((item) => item.certificate && item.status !== "saved")}><Check size={16} /> {batchSaving ? "Saving…" : "Save all"}</button></div>
             </section>
             {error && <ErrorMessage message={error} onClose={() => setError("")} />}          </>
         ) : (
